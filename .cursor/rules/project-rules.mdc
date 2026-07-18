@@ -1,0 +1,45 @@
+---
+description: EV CMS monorepo coding standards and architectural invariants
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# EV CMS — Project Rules
+
+## Architecture invariants
+
+1. **OCPP Gateway must NOT contain business logic.** Validate OCPP JSON, maintain Redis registry, publish to Kafka, forward Redis PubSub commands to WSS. No tariff, billing, wallet, or auth decisions.
+2. **Always use Redis registry** (`charger:{id}`) to find which OCPP Gateway instance holds the charger socket before sending RemoteStart/Stop/ReserveNow/Unlock/Reset.
+3. **Idempotency** — StartTransaction (and session start APIs) must use an idempotency key; duplicates must not create double billing or double sessions.
+4. **All OCPP messages** must be logged raw to S3 (async, non-blocking).
+5. **Zod** for all inbound validation; **pino** for structured logging; **graceful shutdown** with 60s drain on OCPP Gateway.
+
+## Service boundaries
+
+| Service | Owns | Does not own |
+|---------|------|--------------|
+| ocpp-gateway | WSS, OCPP parse, registry, Kafka produce, cmd subscribe | Billing, auth, tariff |
+| core-api | REST, JWT/OTP, domain state machines, Socket.io | Direct charger sockets |
+| ingestion-worker | Batch TimescaleDB writes from meter_values | Business rules |
+
+## Kafka topics
+
+- `ocpp.events` — Boot, Heartbeat, Status, Authorize, Start/Stop, DataTransfer
+- `meter_values` — MeterValues only (high volume)
+- `commands` — audit of outbound OCPP commands
+- `alerts` — fault / offline / security
+
+## Redis conventions
+
+- Key: `charger:{chargerId}` → JSON `{ instanceId, socketId, connectedAt }` TTL 600s (refresh on Heartbeat)
+- Channel: `cmd:{chargerId}` → JSON command envelope for RemoteStart/Stop/etc.
+
+## Coding style
+
+- TypeScript strict, NodeNext modules
+- Prefer small focused modules under `src/modules/*`
+- **Core API layering:** `*.router.ts` (routes + middleware only) → `*.controller.ts` (HTTP mapping) → `*.service.ts` (business logic + Prisma). Never put business logic or DB calls in route files.
+- Use **Prisma** for Postgres access in Core API (`services/core-api/prisma`)
+- Mark incomplete business logic with `// TODO(phase-N):` comments
+- Never commit secrets; use `.env.example` only

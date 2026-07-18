@@ -1,0 +1,283 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  driver
+  admin
+  operator
+  cpo
+
+  @@map("user_role")
+}
+
+enum ChargerStatus {
+  Available
+  Charging
+  Faulted
+  Offline
+  Reserved
+  Unavailable
+
+  @@map("charger_status")
+}
+
+enum ConnectorStatus {
+  Available
+  Preparing
+  Charging
+  SuspendedEV
+  SuspendedEVSE
+  Finishing
+  Reserved
+  Unavailable
+  Faulted
+
+  @@map("connector_status")
+}
+
+enum TransactionState {
+  PENDING
+  AUTHORIZED
+  CHARGING
+  STOPPING
+  COMPLETED
+  FAILED
+  CANCELLED
+
+  @@map("transaction_state")
+}
+
+enum PaymentStatus {
+  created
+  authorized
+  captured
+  failed
+  refunded
+
+  @@map("payment_status")
+}
+
+enum ReservationStatus {
+  active
+  used
+  expired
+  cancelled
+
+  @@map("reservation_status")
+}
+
+enum RfidStatus {
+  active
+  blocked
+  lost
+
+  @@map("rfid_status")
+}
+
+model User {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone     String   @unique @db.VarChar(20)
+  email     String?  @db.VarChar(255)
+  name      String?  @db.VarChar(255)
+  role      UserRole @default(driver)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  wallet        Wallet?
+  transactions  Transaction[]
+  payments      Payment[]
+  rfidTags      RfidTag[]
+  reservations  Reservation[]
+  invoices      Invoice[]
+  ledgerEntries WalletLedger[]
+
+  @@map("users")
+}
+
+model OtpChallenge {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone      String    @db.VarChar(20)
+  codeHash   String    @map("code_hash") @db.VarChar(128)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([phone], map: "idx_otp_phone")
+  @@map("otp_challenges")
+}
+
+model Tariff {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String   @db.VarChar(128)
+  currency         String   @default("INR") @db.Char(3)
+  ratePerKwhPaise  Int      @default(0) @map("rate_per_kwh_paise")
+  ratePerMinPaise  Int      @default(0) @map("rate_per_min_paise")
+  slabs            Json     @default("[]")
+  gstPct           Decimal  @default(18.00) @map("gst_pct") @db.Decimal(5, 2)
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  chargers Charger[]
+
+  @@map("tariffs")
+}
+
+model Charger {
+  id           String        @id @db.VarChar(64)
+  vendor       String        @db.VarChar(128)
+  model        String?       @db.VarChar(128)
+  serialNumber String?       @map("serial_number") @db.VarChar(128)
+  firmware     String?       @db.VarChar(64)
+  lat          Float?
+  lng          Float?
+  address      String?
+  status       ChargerStatus @default(Offline)
+  tariffId     String?       @map("tariff_id") @db.Uuid
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tariff       Tariff?       @relation(fields: [tariffId], references: [id])
+  connectors   Connector[]
+  transactions Transaction[]
+  reservations Reservation[]
+
+  @@index([lat, lng], map: "idx_chargers_geo")
+  @@index([status], map: "idx_chargers_status")
+  @@map("chargers")
+}
+
+model Connector {
+  id          String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chargerId   String          @map("charger_id") @db.VarChar(64)
+  connectorId Int             @map("connector_id")
+  type        String?         @db.VarChar(64)
+  maxKw       Float?          @map("max_kw")
+  status      ConnectorStatus @default(Unavailable)
+  updatedAt   DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  charger Charger @relation(fields: [chargerId], references: [id], onDelete: Cascade)
+
+  @@unique([chargerId, connectorId])
+  @@map("connectors")
+}
+
+model Transaction {
+  id                BigInt           @id @default(autoincrement())
+  idempotencyKey    String           @unique @map("idempotency_key") @db.VarChar(128)
+  chargerId         String           @map("charger_id") @db.VarChar(64)
+  connectorId       Int              @map("connector_id")
+  userId            String?          @map("user_id") @db.Uuid
+  ocppTransactionId Int?             @map("ocpp_transaction_id")
+  state             TransactionState @default(PENDING)
+  idTag             String?          @map("id_tag") @db.VarChar(64)
+  meterStart        Int?             @map("meter_start")
+  meterStop         Int?             @map("meter_stop")
+  energyKwh         Decimal?         @map("energy_kwh") @db.Decimal(12, 4)
+  amountPaise       Int?             @map("amount_paise")
+  startedAt         DateTime?        @map("started_at") @db.Timestamptz(6)
+  stoppedAt         DateTime?        @map("stopped_at") @db.Timestamptz(6)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  charger  Charger   @relation(fields: [chargerId], references: [id])
+  user     User?     @relation(fields: [userId], references: [id])
+  invoices Invoice[]
+
+  @@index([chargerId, state], map: "idx_tx_charger")
+  @@index([userId], map: "idx_tx_user")
+  @@map("transactions")
+}
+
+model Wallet {
+  userId       String   @id @map("user_id") @db.Uuid
+  balancePaise BigInt   @default(0) @map("balance_paise")
+  holdPaise    BigInt   @default(0) @map("hold_paise")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("wallets")
+}
+
+model WalletLedger {
+  id         BigInt   @id @default(autoincrement())
+  userId     String   @map("user_id") @db.Uuid
+  deltaPaise BigInt   @map("delta_paise")
+  reason     String   @db.VarChar(64)
+  refId      String   @map("ref_id") @db.VarChar(128)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([refId, reason])
+  @@index([userId], map: "idx_ledger_user")
+  @@map("wallet_ledger")
+}
+
+model Payment {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String        @map("user_id") @db.Uuid
+  provider    String        @default("razorpay") @db.VarChar(32)
+  amountPaise Int           @map("amount_paise")
+  status      PaymentStatus @default(created)
+  externalId  String?       @map("external_id") @db.VarChar(128)
+  meta        Json          @default("{}")
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("payments")
+}
+
+model RfidTag {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String     @map("user_id") @db.Uuid
+  tagId     String     @unique @map("tag_id") @db.VarChar(64)
+  status    RfidStatus @default(active)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("rfid_tags")
+}
+
+model Reservation {
+  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chargerId   String            @map("charger_id") @db.VarChar(64)
+  connectorId Int               @map("connector_id")
+  userId      String            @map("user_id") @db.Uuid
+  expiresAt   DateTime          @map("expires_at") @db.Timestamptz(6)
+  status      ReservationStatus @default(active)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  charger Charger @relation(fields: [chargerId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([chargerId, status], map: "idx_reservations_charger")
+  @@map("reservations")
+}
+
+model Invoice {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invoiceNo     String   @unique @map("invoice_no") @db.VarChar(64)
+  transactionId BigInt   @map("transaction_id")
+  userId        String   @map("user_id") @db.Uuid
+  subtotalPaise Int      @map("subtotal_paise")
+  gstPaise      Int      @map("gst_paise")
+  totalPaise    Int      @map("total_paise")
+  s3Key         String?  @map("s3_key")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@map("invoices")
+}

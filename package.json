@@ -1,0 +1,27 @@
+{
+  "name": "quant_charge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quant Charge — EV Charging Management System (CPO Platform)",
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:ocpp": "npm run dev -w @ev-cms/ocpp-gateway",
+    "dev:api": "npm run dev -w @ev-cms/core-api",
+    "dev:ingestion": "npm run dev -w @ev-cms/ingestion-worker",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "docker:up": "docker compose -f infra/docker-compose.yml up -d",
+    "docker:down": "docker compose -f infra/docker-compose.yml down",
+    "migrate": "node infra/migrations/run.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

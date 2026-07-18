@@ -1,0 +1,128 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ev-cms-postgres
+    environment:
+      POSTGRES_DB: ev_cms
+      POSTGRES_USER: evcms
+      POSTGRES_PASSWORD: evcms_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evcms -d ev_cms"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: ev-cms-timescaledb
+    environment:
+      POSTGRES_DB: ev_meter
+      POSTGRES_USER: evcms
+      POSTGRES_PASSWORD: evcms_secret
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./timescaledb/001_meter_hypertable.sql:/docker-entrypoint-initdb.d/001_meter_hypertable.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evcms -d ev_meter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Single-node Redis (dev). Production: Redis Cluster.
+  redis:
+    image: redis:7-alpine
+    container_name: ev-cms-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Redpanda = Kafka-compatible broker (lighter than full Kafka for local)
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
+    container_name: ev-cms-redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:9092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:8082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --default-log-level=warn
+    ports:
+      - "9092:19092"
+      - "8082:18082"
+      - "8081:18081"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      # Faster than `rpk cluster health` on Docker Desktop / Windows
+      test: ["CMD-SHELL", "rpk cluster info -X brokers=redpanda:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
+    container_name: ev-cms-redpanda-init
+    depends_on:
+      redpanda:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+          if rpk topic create ocpp.events meter_values commands alerts --brokers redpanda:9092; then
+            echo "Kafka topics ready"
+            exit 0
+          fi
+          echo "waiting for redpanda... ($i)"
+          sleep 5
+        done
+        echo "topic create failed after retries" >&2
+        exit 1
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: ev-cms-mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  localstack:
+    image: localstack/localstack:3
+    container_name: ev-cms-localstack
+    environment:
+      SERVICES: s3
+      DEFAULT_REGION: ap-south-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - ./localstack-init.sh:/etc/localstack/init/ready.d/init-s3.sh:ro
+
+volumes:
+  postgres_data:
+  timescale_data:
+  redis_data:
+  redpanda_data:
+  localstack_data:

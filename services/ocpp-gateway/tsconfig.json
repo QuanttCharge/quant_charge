@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*", "src/types/**/*.d.ts"],
+  "references": [
+    { "path": "../../packages/shared-types" },
+    { "path": "../../packages/ocpp-1.6j-types" }
+  ]
+}

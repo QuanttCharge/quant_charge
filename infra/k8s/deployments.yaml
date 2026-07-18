@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ev-cms
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocpp-gateway
+  namespace: ev-cms
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ocpp-gateway
+  template:
+    metadata:
+      labels:
+        app: ocpp-gateway
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: ocpp-gateway
+          image: ev-cms/ocpp-gateway:latest
+          ports:
+            - containerPort: 9000
+              name: wss
+          envFrom:
+            - secretRef:
+                name: ev-cms-secrets
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-api
+  namespace: ev-cms
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: core-api
+  template:
+    metadata:
+      labels:
+        app: core-api
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: core-api
+          image: ev-cms/core-api:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: ev-cms-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-worker
+  namespace: ev-cms
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ingestion-worker
+  template:
+    metadata:
+      labels:
+        app: ingestion-worker
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ingestion-worker
+          image: ev-cms/ingestion-worker:latest
+          envFrom:
+            - secretRef:
+                name: ev-cms-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocpp-gateway
+  namespace: ev-cms
+spec:
+  # Sticky sessions for long-lived WSS — pair with LB IP hash / sessionAffinity
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 86400
+  selector:
+    app: ocpp-gateway
+  ports:
+    - port: 443
+      targetPort: 9000
+      name: wss
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: core-api
+  namespace: ev-cms
+spec:
+  selector:
+    app: core-api
+  ports:
+    - port: 80
+      targetPort: 3000
+      name: http
