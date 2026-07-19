@@ -16,7 +16,9 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "docker:up": "docker compose -f infra/docker-compose.yml up -d",
     "docker:down": "docker compose -f infra/docker-compose.yml down",
-    "migrate": "node infra/migrations/run.mjs"
+    "migrate": "node infra/migrations/run.mjs",
+    "seed": "node scripts/seed.mjs",
+    "sim:ocpp": "node tools/ocpp-simulator/index.mjs"
   },
   "dependencies": {
     "pg": "^8.13.1"

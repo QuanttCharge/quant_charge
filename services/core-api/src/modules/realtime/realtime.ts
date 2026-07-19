@@ -47,6 +47,11 @@ export async function startRealtime(httpServer: HttpServer): Promise<{
       try {
         const envelope = MeterValueEnvelopeSchema.parse(JSON.parse(message.value.toString()));
         io.to(`charger:${envelope.chargerId}`).emit('meter', envelope);
+        await sessionsService.applyMeterEnergy({
+          chargerId: envelope.chargerId,
+          transactionId: envelope.transactionId,
+          energyKwh: envelope.energyKwh,
+        });
       } catch (err) {
         logger.warn({ err }, 'meter_values parse failed');
       }

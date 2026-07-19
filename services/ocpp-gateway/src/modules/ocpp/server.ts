@@ -102,6 +102,7 @@ export function startOcppServer(
     close: (ws: WebSocket) => {
       const { chargerId, socketId } = ws.getUserData();
       sockets.delete(socketId);
+      router.clearPendingForCharger(chargerId);
       void registry.unsubscribeCommands(chargerId);
       void registry.unregister(chargerId, socketId);
       void kafka.publishOcppEvent({
@@ -153,12 +154,12 @@ async function handleRemoteCommand(
   kafka: KafkaProducerService,
   cmd: RemoteCommandEnvelope,
 ): Promise<void> {
-  const frame = router.buildOutboundCall(cmd.type, cmd.payload);
+  const { frame, uniqueId } = router.buildOutboundCall(cmd);
   try {
     ws.send(frame);
     logRawOcppToS3({ chargerId: cmd.chargerId, direction: 'out', raw: frame });
-    await kafka.publishCommandAudit(cmd, cmd.chargerId);
-    logger.info({ commandId: cmd.commandId, type: cmd.type }, 'remote command sent');
+    await kafka.publishCommandAudit({ ...cmd, uniqueId, kind: 'CallSent' }, cmd.chargerId);
+    logger.info({ commandId: cmd.commandId, type: cmd.type, uniqueId }, 'remote command sent');
   } catch (err) {
     logger.error({ err, commandId: cmd.commandId }, 'failed to send remote command');
   }

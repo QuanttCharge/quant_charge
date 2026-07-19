@@ -16,6 +16,36 @@ enum UserRole {
   @@map("user_role")
 }
 
+enum PlatformRole {
+  platform_admin
+
+  @@map("platform_role")
+}
+
+enum OrgRole {
+  org_admin
+  org_operator
+  org_finance
+  driver
+
+  @@map("org_role")
+}
+
+enum OrgStatus {
+  active
+  suspended
+
+  @@map("org_status")
+}
+
+enum MembershipStatus {
+  active
+  invited
+  disabled
+
+  @@map("membership_status")
+}
+
 enum ChargerStatus {
   Available
   Charging
@@ -80,15 +110,90 @@ enum RfidStatus {
   @@map("rfid_status")
 }
 
+model Organization {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String    @db.VarChar(255)
+  slug      String    @unique @db.VarChar(64)
+  status    OrgStatus @default(active)
+  gstin     String?   @db.VarChar(32)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  members          OrganizationMember[]
+  invites          OrganizationInvite[]
+  rolePermissions  OrganizationRolePermission[]
+  tariffs          Tariff[]
+  chargers         Charger[]
+  transactions     Transaction[]
+  reservations     Reservation[]
+  invoices         Invoice[]
+  payments         Payment[]
+
+  @@map("organizations")
+}
+
+model OrganizationRolePermission {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  role           OrgRole
+  permissions    String[]
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, role])
+  @@index([organizationId], map: "idx_org_role_perms_org")
+  @@map("organization_role_permissions")
+}
+
+model OrganizationMember {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  role           OrgRole          @default(driver)
+  status         MembershipStatus @default(active)
+  invitedPhone   String?          @map("invited_phone") @db.VarChar(20)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId], map: "idx_org_members_user")
+  @@index([organizationId], map: "idx_org_members_org")
+  @@map("organization_members")
+}
+
+model OrganizationInvite {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  phone          String    @db.VarChar(20)
+  role           OrgRole   @default(driver)
+  invitedBy      String?   @map("invited_by") @db.Uuid
+  token          String    @unique @db.VarChar(64)
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(6)
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  inviter      User?        @relation("InviteInviter", fields: [invitedBy], references: [id])
+
+  @@unique([organizationId, phone])
+  @@index([phone], map: "idx_org_invites_phone")
+  @@map("organization_invites")
+}
+
 model User {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  phone     String   @unique @db.VarChar(20)
-  email     String?  @db.VarChar(255)
-  name      String?  @db.VarChar(255)
-  role      UserRole @default(driver)
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone        String        @unique @db.VarChar(20)
+  email        String?       @db.VarChar(255)
+  name         String?       @db.VarChar(255)
+  role         UserRole      @default(driver)
+  platformRole PlatformRole? @map("platform_role")
+  isActive     Boolean       @default(true) @map("is_active")
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   wallet        Wallet?
   transactions  Transaction[]
@@ -97,6 +202,8 @@ model User {
   reservations  Reservation[]
   invoices      Invoice[]
   ledgerEntries WalletLedger[]
+  memberships   OrganizationMember[]
+  invitesSent   OrganizationInvite[] @relation("InviteInviter")
 
   @@map("users")
 }
@@ -115,6 +222,7 @@ model OtpChallenge {
 
 model Tariff {
   id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String?  @map("organization_id") @db.Uuid
   name             String   @db.VarChar(128)
   currency         String   @default("INR") @db.Char(3)
   ratePerKwhPaise  Int      @default(0) @map("rate_per_kwh_paise")
@@ -124,25 +232,29 @@ model Tariff {
   isActive         Boolean  @default(true) @map("is_active")
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  chargers Charger[]
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  chargers     Charger[]
 
+  @@index([organizationId], map: "idx_tariffs_org")
   @@map("tariffs")
 }
 
 model Charger {
-  id           String        @id @db.VarChar(64)
-  vendor       String        @db.VarChar(128)
-  model        String?       @db.VarChar(128)
-  serialNumber String?       @map("serial_number") @db.VarChar(128)
-  firmware     String?       @db.VarChar(64)
-  lat          Float?
-  lng          Float?
-  address      String?
-  status       ChargerStatus @default(Offline)
-  tariffId     String?       @map("tariff_id") @db.Uuid
-  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id             String        @id @db.VarChar(64)
+  organizationId String?       @map("organization_id") @db.Uuid
+  vendor         String        @db.VarChar(128)
+  model          String?       @db.VarChar(128)
+  serialNumber   String?       @map("serial_number") @db.VarChar(128)
+  firmware       String?       @db.VarChar(64)
+  lat            Float?
+  lng            Float?
+  address        String?
+  status         ChargerStatus @default(Offline)
+  tariffId       String?       @map("tariff_id") @db.Uuid
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  organization Organization? @relation(fields: [organizationId], references: [id])
   tariff       Tariff?       @relation(fields: [tariffId], references: [id])
   connectors   Connector[]
   transactions Transaction[]
@@ -150,6 +262,7 @@ model Charger {
 
   @@index([lat, lng], map: "idx_chargers_geo")
   @@index([status], map: "idx_chargers_status")
+  @@index([organizationId], map: "idx_chargers_org")
   @@map("chargers")
 }
 
@@ -170,6 +283,7 @@ model Connector {
 
 model Transaction {
   id                BigInt           @id @default(autoincrement())
+  organizationId    String?          @map("organization_id") @db.Uuid
   idempotencyKey    String           @unique @map("idempotency_key") @db.VarChar(128)
   chargerId         String           @map("charger_id") @db.VarChar(64)
   connectorId       Int              @map("connector_id")
@@ -186,12 +300,14 @@ model Transaction {
   createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  charger  Charger   @relation(fields: [chargerId], references: [id])
-  user     User?     @relation(fields: [userId], references: [id])
-  invoices Invoice[]
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  charger      Charger       @relation(fields: [chargerId], references: [id])
+  user         User?         @relation(fields: [userId], references: [id])
+  invoices     Invoice[]
 
   @@index([chargerId, state], map: "idx_tx_charger")
   @@index([userId], map: "idx_tx_user")
+  @@index([organizationId], map: "idx_tx_org")
   @@map("transactions")
 }
 
@@ -222,17 +338,19 @@ model WalletLedger {
 }
 
 model Payment {
-  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId      String        @map("user_id") @db.Uuid
-  provider    String        @default("razorpay") @db.VarChar(32)
-  amountPaise Int           @map("amount_paise")
-  status      PaymentStatus @default(created)
-  externalId  String?       @map("external_id") @db.VarChar(128)
-  meta        Json          @default("{}")
-  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?       @map("organization_id") @db.Uuid
+  userId         String        @map("user_id") @db.Uuid
+  provider       String        @default("razorpay") @db.VarChar(32)
+  amountPaise    Int           @map("amount_paise")
+  status         PaymentStatus @default(created)
+  externalId     String?       @map("external_id") @db.VarChar(128)
+  meta           Json          @default("{}")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
 
   @@map("payments")
 }
@@ -250,34 +368,38 @@ model RfidTag {
 }
 
 model Reservation {
-  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  chargerId   String            @map("charger_id") @db.VarChar(64)
-  connectorId Int               @map("connector_id")
-  userId      String            @map("user_id") @db.Uuid
-  expiresAt   DateTime          @map("expires_at") @db.Timestamptz(6)
-  status      ReservationStatus @default(active)
-  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?           @map("organization_id") @db.Uuid
+  chargerId      String            @map("charger_id") @db.VarChar(64)
+  connectorId    Int               @map("connector_id")
+  userId         String            @map("user_id") @db.Uuid
+  expiresAt      DateTime          @map("expires_at") @db.Timestamptz(6)
+  status         ReservationStatus @default(active)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  charger Charger @relation(fields: [chargerId], references: [id])
-  user    User    @relation(fields: [userId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  charger      Charger       @relation(fields: [chargerId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
 
   @@index([chargerId, status], map: "idx_reservations_charger")
   @@map("reservations")
 }
 
 model Invoice {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  invoiceNo     String   @unique @map("invoice_no") @db.VarChar(64)
-  transactionId BigInt   @map("transaction_id")
-  userId        String   @map("user_id") @db.Uuid
-  subtotalPaise Int      @map("subtotal_paise")
-  gstPaise      Int      @map("gst_paise")
-  totalPaise    Int      @map("total_paise")
-  s3Key         String?  @map("s3_key")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  invoiceNo      String   @unique @map("invoice_no") @db.VarChar(64)
+  transactionId  BigInt   @map("transaction_id")
+  userId         String   @map("user_id") @db.Uuid
+  subtotalPaise  Int      @map("subtotal_paise")
+  gstPaise       Int      @map("gst_paise")
+  totalPaise     Int      @map("total_paise")
+  s3Key          String?  @map("s3_key")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  transaction Transaction @relation(fields: [transactionId], references: [id])
-  user        User        @relation(fields: [userId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  transaction  Transaction   @relation(fields: [transactionId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
 
   @@map("invoices")
 }

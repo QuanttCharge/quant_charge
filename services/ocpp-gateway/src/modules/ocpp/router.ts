@@ -4,7 +4,7 @@ import {
   validateCallPayload,
   type SupportedAction16,
 } from '@ev-cms/ocpp-1.6j-types';
-import type { MeterValueEnvelope, OcppEventEnvelope } from '@ev-cms/shared-types';
+import type { MeterValueEnvelope, OcppEventEnvelope, RemoteCommandEnvelope } from '@ev-cms/shared-types';
 import { logger } from '../../common/logger.js';
 import { logRawOcppToS3 } from '../../common/s3-raw-logger.js';
 import { config } from '../../common/config.js';
@@ -13,10 +13,23 @@ import type { RedisRegistry } from '../redis/registry.js';
 
 export type SocketSend = (data: string) => void;
 
+export type PendingCall = {
+  uniqueId: string;
+  commandId: string;
+  type: string;
+  chargerId: string;
+  correlationId?: string;
+  issuedAt: string;
+};
+
 /**
  * OCPP message router — validate & publish only. NO business logic.
+ * Tracks outbound CSMS Calls so CallResult/CallError can be correlated.
  */
 export class OcppRouter {
+  /** key = `${chargerId}:${uniqueId}` */
+  private readonly pendingCalls = new Map<string, PendingCall>();
+
   constructor(
     private readonly kafka: KafkaProducerService,
     private readonly registry: RedisRegistry,
@@ -44,9 +57,12 @@ export class OcppRouter {
     }
 
     const messageType = frame[0];
+    if (messageType === 3 || messageType === 4) {
+      await this.handleCallResponse(chargerId, messageType, frame);
+      return;
+    }
+
     if (messageType !== 2) {
-      // CallResult / CallError from charger in response to CSMS Call
-      // TODO(phase-2): correlate pending outbound Calls
       logger.debug({ chargerId, messageType, uniqueId: frame[1] }, 'inbound non-Call');
       return;
     }
@@ -95,16 +111,72 @@ export class OcppRouter {
       await this.kafka.publishOcppEvent(event);
     }
 
-    // StatusNotification also emits ocpp.events for Core API / Flow 3 consumers
-    if (action === 'StatusNotification') {
-      // Core API updates Postgres status from Kafka — gateway stays thin
-    }
-
     const resultFrame = JSON.stringify([3, uniqueId, result]);
     send(resultFrame);
     logRawOcppToS3({ chargerId, direction: 'out', raw: resultFrame });
 
-    void socketId; // reserved for pending Call correlation
+    void socketId;
+  }
+
+  private async handleCallResponse(
+    chargerId: string,
+    messageType: 3 | 4,
+    frame: unknown[],
+  ): Promise<void> {
+    const uniqueId = String(frame[1]);
+    const key = pendingKey(chargerId, uniqueId);
+    const pending = this.pendingCalls.get(key);
+    this.pendingCalls.delete(key);
+
+    if (!pending) {
+      logger.debug({ chargerId, uniqueId, messageType }, 'CallResult with no pending Call');
+      return;
+    }
+
+    const isError = messageType === 4;
+    const payload = isError
+      ? {
+          errorCode: frame[2],
+          errorDescription: frame[3],
+          errorDetails: frame[4] ?? {},
+        }
+      : (frame[2] as Record<string, unknown>);
+
+    await this.kafka.publishCommandAudit(
+      {
+        kind: isError ? 'CallError' : 'CallResult',
+        commandId: pending.commandId,
+        type: pending.type,
+        chargerId,
+        uniqueId,
+        correlationId: pending.correlationId,
+        issuedAt: pending.issuedAt,
+        respondedAt: new Date().toISOString(),
+        payload,
+      },
+      chargerId,
+    );
+
+    // Also emit on ocpp.events so Core API / observers can react
+    await this.kafka.publishOcppEvent({
+      eventId: uuidv4(),
+      chargerId,
+      action: isError ? `${pending.type}.CallError` : `${pending.type}.CallResult`,
+      messageType,
+      uniqueId,
+      payload: {
+        commandId: pending.commandId,
+        correlationId: pending.correlationId,
+        ...((typeof payload === 'object' && payload) || {}),
+      },
+      receivedAt: new Date().toISOString(),
+      instanceId: config.OCPP_INSTANCE_ID,
+    });
+
+    logger.info(
+      { commandId: pending.commandId, type: pending.type, isError },
+      'correlated CallResult',
+    );
   }
 
   private async publishMeterValues(chargerId: string, payload: Record<string, unknown>): Promise<void> {
@@ -131,10 +203,6 @@ export class OcppRouter {
     }
   }
 
-  /**
-   * Minimal protocol acknowledgements only — Core API owns real Authorize/Start decisions via Kafka later.
-   * TODO(phase-2): for Authorize/StartTransaction, optionally await Core API via request-reply if required by policy.
-   */
   private buildCallResult(action: SupportedAction16, _payload: Record<string, unknown>): Record<string, unknown> {
     const now = new Date().toISOString();
     switch (action) {
@@ -145,10 +213,8 @@ export class OcppRouter {
       case 'StatusNotification':
         return {};
       case 'Authorize':
-        // Accept at protocol layer; Core API may revoke via future remote commands
         return { idTagInfo: { status: 'Accepted' } };
       case 'StartTransaction':
-        // Idempotency for billing is owned by Core API when consuming ocpp.events
         return {
           transactionId: Math.floor(Date.now() % 2_147_483_647),
           idTagInfo: { status: 'Accepted' },
@@ -164,11 +230,34 @@ export class OcppRouter {
     }
   }
 
-  /** Build CSMS → Charge Point Call from Redis command */
-  buildOutboundCall(type: string, payload: Record<string, unknown>): string {
+  /** Build CSMS → Charge Point Call and register for CallResult correlation */
+  buildOutboundCall(cmd: RemoteCommandEnvelope): { frame: string; uniqueId: string } {
     const uniqueId = uuidv4();
-    return JSON.stringify([2, uniqueId, type, payload]);
+    const frame = JSON.stringify([2, uniqueId, cmd.type, cmd.payload]);
+    this.pendingCalls.set(pendingKey(cmd.chargerId, uniqueId), {
+      uniqueId,
+      commandId: cmd.commandId,
+      type: cmd.type,
+      chargerId: cmd.chargerId,
+      correlationId: cmd.correlationId,
+      issuedAt: cmd.issuedAt,
+    });
+    // TTL cleanup — drop stale pending after 2 minutes
+    setTimeout(() => {
+      this.pendingCalls.delete(pendingKey(cmd.chargerId, uniqueId));
+    }, 120_000).unref?.();
+    return { frame, uniqueId };
   }
+
+  clearPendingForCharger(chargerId: string): void {
+    for (const key of this.pendingCalls.keys()) {
+      if (key.startsWith(`${chargerId}:`)) this.pendingCalls.delete(key);
+    }
+  }
+}
+
+function pendingKey(chargerId: string, uniqueId: string): string {
+  return `${chargerId}:${uniqueId}`;
 }
 
 function pickMeasurand(

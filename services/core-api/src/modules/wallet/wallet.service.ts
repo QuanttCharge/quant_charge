@@ -43,7 +43,6 @@ export class WalletService {
   }
 
   async releaseHold(userId: string, amountPaise: number, refId: string): Promise<void> {
-    // TODO(phase-3): full release/capture path
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`
         UPDATE wallets
@@ -57,6 +56,43 @@ export class WalletService {
             deltaPaise: BigInt(amountPaise),
             reason: 'release',
             refId,
+          },
+        ],
+        skipDuplicates: true,
+      });
+    });
+  }
+
+  /** Release hold then debit actual charge amount from balance */
+  async captureHold(
+    userId: string,
+    holdAmountPaise: number,
+    capturePaise: number,
+    holdRefId: string,
+    captureRefId: string,
+  ): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        UPDATE wallets
+        SET
+          hold_paise = GREATEST(hold_paise - ${holdAmountPaise}, 0),
+          balance_paise = GREATEST(balance_paise - ${capturePaise}, 0),
+          updated_at = NOW()
+        WHERE user_id = ${userId}::uuid
+      `;
+      await tx.walletLedger.createMany({
+        data: [
+          {
+            userId,
+            deltaPaise: BigInt(holdAmountPaise),
+            reason: 'release',
+            refId: holdRefId,
+          },
+          {
+            userId,
+            deltaPaise: BigInt(-capturePaise),
+            reason: 'capture',
+            refId: captureRefId,
           },
         ],
         skipDuplicates: true,

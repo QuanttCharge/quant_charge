@@ -23,6 +23,8 @@ const EnvSchema = z.object({
   SMTP_PORT: z.coerce.number().default(1025),
   SMTP_FROM: z.string().default('noreply@evcms.local'),
   OCPI_TOKEN: z.string().default('ocpi_mock_token'),
+  /** Used by POST /platform/super-admins (X-Bootstrap-Secret). Change in prod. */
+  BOOTSTRAP_SECRET: z.string().min(8).default('dev-bootstrap-secret-change-me'),
 });
 
 export type Config = z.infer<typeof EnvSchema>;
@@ -30,4 +32,6 @@ export type Config = z.infer<typeof EnvSchema>;
 export const config: Config = EnvSchema.parse({
   ...process.env,
   JWT_SECRET: process.env.JWT_SECRET ?? 'dev-only-change-me-please',
+  BOOTSTRAP_SECRET:
+    process.env.BOOTSTRAP_SECRET ?? 'dev-bootstrap-secret-change-me',
 });

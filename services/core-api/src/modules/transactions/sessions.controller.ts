@@ -11,7 +11,8 @@ export class SessionsController {
   };
 
   stop = async (req: Request, res: Response): Promise<void> => {
-    const result = await sessionsService.stopSession(req.body as StopSessionInput);
+    const { user } = req as AuthedRequest;
+    const result = await sessionsService.stopSession(user, req.body as StopSessionInput);
     res.status(202).json(result);
   };
 }

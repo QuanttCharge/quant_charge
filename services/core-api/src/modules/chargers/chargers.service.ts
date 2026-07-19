@@ -1,6 +1,8 @@
 import type { ChargerStatus, ConnectorStatus, Prisma } from '@prisma/client';
 import { AppError } from '../../common/errors.js';
 import { prisma } from '../../common/prisma.js';
+import type { AuthPayload } from '../../common/middleware/auth.middleware.js';
+import { assertOrgAccess } from '../../common/middleware/auth.middleware.js';
 import type { CreateChargerInput } from './chargers.schemas.js';
 
 export type NearbyChargerRow = {
@@ -12,15 +14,22 @@ export type NearbyChargerRow = {
   status: ChargerStatus;
   address: string | null;
   distance_km: number;
+  organization_id: string | null;
 };
 
 export class ChargersService {
-  async upsertCharger(input: CreateChargerInput): Promise<{ id: string }> {
+  async upsertCharger(user: AuthPayload, input: CreateChargerInput): Promise<{ id: string }> {
+    if (!user.orgId && user.role !== 'platform_admin') {
+      throw new AppError('org_required', 403, 'org_required');
+    }
+    const organizationId = user.orgId!;
+
     await prisma.$transaction(async (tx) => {
       await tx.charger.upsert({
         where: { id: input.id },
         create: {
           id: input.id,
+          organizationId,
           vendor: input.vendor,
           model: input.model,
           serialNumber: input.serialNumber,
@@ -35,6 +44,7 @@ export class ChargersService {
           lat: input.lat,
           lng: input.lng,
           address: input.address,
+          organizationId,
         },
       });
 
@@ -63,11 +73,29 @@ export class ChargersService {
     return { id: input.id };
   }
 
-  async findNearby(lat: number, lng: number, radiusKm: number): Promise<NearbyChargerRow[]> {
-    // Haversine; TODO(phase-3): PostGIS geography
+  async findNearby(
+    lat: number,
+    lng: number,
+    radiusKm: number,
+    orgId?: string,
+  ): Promise<NearbyChargerRow[]> {
+    if (orgId) {
+      return prisma.$queryRaw<NearbyChargerRow[]>`
+        SELECT * FROM (
+          SELECT id, vendor, model, lat, lng, status, address, organization_id,
+            (6371 * acos(cos(radians(${lat})) * cos(radians(lat)) * cos(radians(lng) - radians(${lng}))
+            + sin(radians(${lat})) * sin(radians(lat)))) AS distance_km
+          FROM chargers
+          WHERE lat IS NOT NULL AND lng IS NOT NULL AND organization_id = ${orgId}::uuid
+        ) q
+        WHERE distance_km <= ${radiusKm}
+        ORDER BY distance_km
+        LIMIT 50
+      `;
+    }
     return prisma.$queryRaw<NearbyChargerRow[]>`
       SELECT * FROM (
-        SELECT id, vendor, model, lat, lng, status, address,
+        SELECT id, vendor, model, lat, lng, status, address, organization_id,
           (6371 * acos(cos(radians(${lat})) * cos(radians(lat)) * cos(radians(lng) - radians(${lng}))
           + sin(radians(${lat})) * sin(radians(lat)))) AS distance_km
         FROM chargers
@@ -79,13 +107,16 @@ export class ChargersService {
     `;
   }
 
-  async getById(id: string) {
+  async getById(id: string, user?: AuthPayload) {
     const charger = await prisma.charger.findUnique({
       where: { id },
       include: { connectors: true },
     });
     if (!charger) {
       throw new AppError('not_found', 404, 'not_found');
+    }
+    if (user) {
+      assertOrgAccess(user, charger.organizationId);
     }
     return charger;
   }

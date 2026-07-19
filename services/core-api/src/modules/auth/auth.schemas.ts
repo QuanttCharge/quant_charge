@@ -9,5 +9,10 @@ export const OtpVerifySchema = z.object({
   code: z.string().length(6),
 });
 
+export const SelectOrgSchema = z.object({
+  organizationId: z.string().uuid(),
+});
+
 export type OtpRequestInput = z.infer<typeof OtpRequestSchema>;
 export type OtpVerifyInput = z.infer<typeof OtpVerifySchema>;
+export type SelectOrgInput = z.infer<typeof SelectOrgSchema>;

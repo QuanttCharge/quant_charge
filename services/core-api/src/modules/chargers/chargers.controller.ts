@@ -1,11 +1,13 @@
 import type { Request, Response } from 'express';
 import { AppError } from '../../common/errors.js';
+import type { AuthedRequest } from '../../common/middleware/auth.middleware.js';
 import { chargersService } from './chargers.service.js';
 import type { CreateChargerInput } from './chargers.schemas.js';
 
 export class ChargersController {
   create = async (req: Request, res: Response): Promise<void> => {
-    const result = await chargersService.upsertCharger(req.body as CreateChargerInput);
+    const { user } = req as AuthedRequest;
+    const result = await chargersService.upsertCharger(user, req.body as CreateChargerInput);
     res.status(201).json(result);
   };
 
@@ -16,12 +18,15 @@ export class ChargersController {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       throw new AppError('lat_lng_required', 400, 'lat_lng_required');
     }
-    const chargers = await chargersService.findNearby(lat, lng, radiusKm);
+    const auth = (req as AuthedRequest).user;
+    const orgId = auth?.role === 'platform_admin' ? undefined : auth?.orgId;
+    const chargers = await chargersService.findNearby(lat, lng, radiusKm, orgId);
     res.json({ chargers });
   };
 
   getById = async (req: Request, res: Response): Promise<void> => {
-    const charger = await chargersService.getById(req.params.id!);
+    const auth = (req as Partial<AuthedRequest>).user;
+    const charger = await chargersService.getById(req.params.id!, auth);
     res.json(charger);
   };
 }

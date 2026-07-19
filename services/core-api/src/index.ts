@@ -8,6 +8,8 @@ import { errorHandler } from './common/http.js';
 import { disconnectPrisma } from './common/prisma.js';
 import { redis } from './common/redis.js';
 import { authRouter } from './modules/auth/auth.router.js';
+import { platformRouter } from './modules/platform/platform.router.js';
+import { orgsRouter } from './modules/orgs/orgs.router.js';
 import { chargersRouter } from './modules/chargers/chargers.router.js';
 import { sessionsRouter } from './modules/transactions/sessions.router.js';
 import { reservationRouter } from './modules/reservation/reservation.router.js';
@@ -27,6 +29,8 @@ async function main(): Promise<void> {
   });
 
   app.use('/auth', authRouter);
+  app.use('/platform', platformRouter);
+  app.use('/orgs', orgsRouter);
   app.use('/chargers', chargersRouter);
   app.use('/sessions', sessionsRouter);
   app.use('/reservations', reservationRouter);
